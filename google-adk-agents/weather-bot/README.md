@@ -36,14 +36,27 @@ The bot is designed to:
     * `export GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"` (if required by your ADK setup)
     * `export OPENWEATHER_API_KEY="YOUR_WEATHER_API_KEY"` (replace with your actual key)
 
-6.  **Run the bot**:
-    ```bash
-    python main.py
+6.  **Using the Weather Bot**:
+    There is no standalone script to run directly. Instead, you can interact with the agent in a Python shell or by importing it into your own script.
+
+    **Example (Python shell):**
+    ```python
+    from agent import root_agent
+    response = root_agent.tools[0]("New York")  # get_live_weather for New York
+    print(response)
+    ```
+    
+    Or, use the tools directly:
+    ```python
+    from agent import get_live_weather, get_current_time, get_weather_forecast
+    print(get_live_weather("New York"))
+    print(get_current_time("New York"))
+    print(get_weather_forecast("New York", day="tomorrow", units="metric"))
     ```
 
 ## 📚 Code Structure
 
-* `main.py`: The main application logic.
+* `agent.py`: The main application logic and agent definition.
 * `tools/`: (Optional) Directory for custom weather API integration tools.
 * `agents/`: (Optional) Directory for agent definitions.
 
