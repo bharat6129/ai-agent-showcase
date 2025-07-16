@@ -1,162 +1,145 @@
-import datetime
-from zoneinfo import ZoneInfo
-from google.adk.agents import Agent
 import os
-import requests
-from dotenv import load_dotenv
-from dateutil import parser as date_parser
-from datetime import datetime, timedelta
-load_dotenv()
+from typing import Optional, Dict, Any
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.sessions import InMemorySessionService
+from google.adk.runners import Runner
+from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.base_tool import BaseTool
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 
-def get_weather(city: str) -> dict:
-    """Retrieves the current weather report for a specified city.
+# --- Model Constants ---
+MODEL_GEMINI_2_0_FLASH = "gemini-2.0-flash"
+MODEL_GPT_4O = "openai/gpt-4.1"
+MODEL_CLAUDE_SONNET = "anthropic/claude-sonnet-4-20250514"
 
-    Args:
-        city (str): The name of the city for which to retrieve the weather report.
-
-    Returns:
-        dict: status and result or error msg.
-    """
-    if city.lower() == "new york":
-        return {
-            "status": "success",
-            "report": (
-                "The weather in New York is sunny with a temperature of 25 degrees"
-                " Celsius (77 degrees Fahrenheit)."
-            ),
-        }
-    else:
-        return {
-            "status": "error",
-            "error_message": f"Weather information for '{city}' is not available.",
-        }
-
-
-def get_current_time(city: str) -> dict:
-    """Returns the current time in a specified city.
-
-    Args:
-        city (str): The name of the city for which to retrieve the current time.
-
-    Returns:
-        dict: status and result or error msg.
-    """
-
-    if city.lower() == "new york":
-        tz_identifier = "America/New_York"
-    else:
-        return {
-            "status": "error",
-            "error_message": (
-                f"Sorry, I don't have timezone information for {city}."
-            ),
-        }
-
-    tz = ZoneInfo(tz_identifier)
-    now = datetime.datetime.now(tz)
-    report = (
-        f'The current time in {city} is {now.strftime("%Y-%m-%d %H:%M:%S %Z%z")}'
-    )
-    return {"status": "success", "report": report}
-
-
-def get_live_weather(city: str) -> dict:
-    """Fetches live weather data for a specified city using OpenWeatherMap API."""
-    api_key = os.getenv("OPENWEATHER_API_KEY")
-    if not api_key:
-        return {
-            "status": "error",
-            "error_message": "OpenWeatherMap API key not found in environment variable OPENWEATHER_API_KEY."
-        }
-    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "error_message": f"Failed to fetch weather data: {response.text}"
-            }
-        data = response.json()
-        weather = data["weather"][0]["description"].capitalize()
-        temp_c = data["main"]["temp"]
-        temp_f = temp_c * 9/5 + 32
-        report = (
-            f"The weather in {city} is {weather} with a temperature of {temp_c:.1f}°C ({temp_f:.1f}°F)."
-        )
-        return {"status": "success", "report": report}
-    except Exception as e:
-        return {
-            "status": "error",
-            "error_message": f"Exception occurred: {e}"
-        }
-
-
-def get_weather_forecast(city: str, day: str = "tomorrow", units: str = "imperial") -> dict:
-    """Fetches weather forecast for a specified city and day using OpenWeatherMap API. Day can be 'today', 'tomorrow', or a date string (YYYY-MM-DD). Units: 'imperial' (F), 'metric' (C)."""
-    api_key = os.getenv("OPENWEATHER_API_KEY")
-    if not api_key:
-        return {
-            "status": "error",
-            "error_message": "OpenWeatherMap API key not found in environment variable OPENWEATHER_API_KEY."
-        }
-    url = f"https://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units={units}"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return {
-                "status": "error",
-                "error_message": f"Failed to fetch forecast data: {response.text}"
-            }
-        data = response.json()
-        # Determine target date
-        now = datetime.now()
-        if day.lower() == "today":
-            target_date = now.date()
-        elif day.lower() == "tomorrow":
-            target_date = (now + timedelta(days=1)).date()
+# --- Mock Weather Tool (Stateful) ---
+def get_weather_stateful(city: str, tool_context: ToolContext) -> dict:
+    """Retrieves weather, converts temp unit based on session state."""
+    city_normalized = city.lower().replace(" ", "")
+    preferred_unit = tool_context.state.get("user_preference_temperature_unit", "Celsius")
+    mock_weather_db = {
+        "newyork": {"temp_c": 25, "condition": "sunny"},
+        "london": {"temp_c": 15, "condition": "cloudy"},
+        "tokyo": {"temp_c": 18, "condition": "light rain"},
+    }
+    if city_normalized in mock_weather_db:
+        data = mock_weather_db[city_normalized]
+        temp_c = data["temp_c"]
+        condition = data["condition"]
+        if preferred_unit == "Fahrenheit":
+            temp_value = (temp_c * 9/5) + 32
+            temp_unit = "°F"
         else:
-            try:
-                target_date = date_parser.parse(day).date()
-            except Exception:
-                return {"status": "error", "error_message": f"Could not parse day: {day}"}
-        # Find forecast closest to noon on target date
-        forecasts = data.get("list", [])
-        target_forecast = None
-        min_time_diff = timedelta(days=2)
-        for entry in forecasts:
-            dt_txt = entry.get("dt_txt")
-            if not dt_txt:
-                continue
-            entry_dt = date_parser.parse(dt_txt)
-            if entry_dt.date() == target_date:
-                time_diff = abs(entry_dt.hour - 12)
-                if time_diff < min_time_diff.total_seconds():
-                    min_time_diff = timedelta(hours=time_diff)
-                    target_forecast = entry
-        if not target_forecast:
-            return {"status": "error", "error_message": f"No forecast available for {city} on {target_date}."}
-        weather = target_forecast["weather"][0]["description"].capitalize()
-        temp = target_forecast["main"]["temp"]
-        unit_symbol = "°F" if units == "imperial" else "°C"
-        report = (
-            f"The forecasted weather in {city} on {target_date} is {weather} with a temperature of {temp:.1f}{unit_symbol}."
-        )
+            temp_value = temp_c
+            temp_unit = "°C"
+        report = f"The weather in {city.capitalize()} is {condition} with a temperature of {temp_value:.0f}{temp_unit}."
+        tool_context.state["last_city_checked_stateful"] = city
         return {"status": "success", "report": report}
-    except Exception as e:
-        return {
-            "status": "error",
-            "error_message": f"Exception occurred: {e}"
-        }
+    else:
+        return {"status": "error", "error_message": f"Sorry, I don't have weather information for '{city}'."}
 
+# --- Greeting and Farewell Tools ---
+def say_hello(name: Optional[str] = None) -> str:
+    """Provides a simple greeting. If a name is provided, it will be used."""
+    if name:
+        return f"Hello, {name}!"
+    return "Hello there!"
 
-root_agent = Agent(
-    name="weather_time_agent",
-    model="gemini-2.0-flash",
-    description=(
-        "Agent to answer questions about the time, live weather, and weather predictions in a city."
-    ),
-    instruction=(
-        "You are a helpful agent who can answer user questions about the time, live weather, and weather predictions (forecasts) in any city using real-time data. Use Fahrenheit if the user requests it."
-    ),
-    tools=[get_live_weather, get_current_time, get_weather_forecast],
+def say_goodbye() -> str:
+    """Provides a simple farewell message to conclude the conversation."""
+    return "Goodbye! Have a great day."
+
+# --- Guardrail Callbacks ---
+def block_keyword_guardrail(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    """Blocks LLM call if user message contains 'BLOCK'."""
+    last_user_message_text = ""
+    if llm_request.contents:
+        for content in reversed(llm_request.contents):
+            if content.role == 'user' and content.parts:
+                if content.parts[0].text:
+                    last_user_message_text = content.parts[0].text
+                    break
+    if "BLOCK" in last_user_message_text.upper():
+        callback_context.state["guardrail_block_keyword_triggered"] = True
+        return LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="I cannot process this request because it contains the blocked keyword 'BLOCK'.")],
+            )
+        )
+    return None
+
+def block_paris_tool_guardrail(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict]:
+    """Blocks weather tool if city is Paris."""
+    if tool.name == "get_weather_stateful":
+        city_argument = args.get("city", "")
+        if city_argument and city_argument.lower() == "paris":
+            tool_context.state["guardrail_tool_block_triggered"] = True
+            return {
+                "status": "error",
+                "error_message": f"Policy restriction: Weather checks for '{city_argument.capitalize()}' are currently disabled by a tool guardrail."
+            }
+    return None
+
+# --- Sub-Agents ---
+greeting_agent = Agent(
+    model=MODEL_GEMINI_2_0_FLASH,
+    name="greeting_agent",
+    instruction="You are the Greeting Agent. Your ONLY task is to provide a friendly greeting using the 'say_hello' tool. Do nothing else.",
+    description="Handles simple greetings and hellos using the 'say_hello' tool.",
+    tools=[say_hello],
 )
+
+farewell_agent = Agent(
+    model=MODEL_GEMINI_2_0_FLASH,
+    name="farewell_agent",
+    instruction="You are the Farewell Agent. Your ONLY task is to provide a polite goodbye message using the 'say_goodbye' tool. Do not perform any other actions.",
+    description="Handles simple farewells and goodbyes using the 'say_goodbye' tool.",
+    tools=[say_goodbye],
+)
+
+# --- Root Agent (Team Orchestrator) ---
+agent = Agent(
+    name="weather_agent_team",
+    model=MODEL_GEMINI_2_0_FLASH,
+    description="Main agent: Provides weather (state-aware unit), delegates greetings/farewells, saves report to state, enforces guardrails.",
+    instruction=(
+        "You are the main Weather Agent. Your job is to provide weather using 'get_weather_stateful'. "
+        "The tool will format the temperature based on user preference stored in state. "
+        "Delegate simple greetings to 'greeting_agent' and farewells to 'farewell_agent'. "
+        "Handle only weather requests, greetings, and farewells."
+    ),
+    tools=[get_weather_stateful],
+    sub_agents=[greeting_agent, farewell_agent],
+    output_key="last_weather_report",
+    before_model_callback=block_keyword_guardrail,
+    before_tool_callback=block_paris_tool_guardrail,
+)
+
+# --- Session Service and Runner Example (for CLI or script use) ---
+def get_default_session_service():
+    return InMemorySessionService()
+
+def get_default_runner():
+    session_service = get_default_session_service()
+    return Runner(
+        agent=agent,
+        app_name="weather_bot_app",
+        session_service=session_service
+    )
+
+# --- Exported symbols ---
+__all__ = [
+    "get_weather_stateful",
+    "say_hello",
+    "say_goodbye",
+    "greeting_agent",
+    "farewell_agent",
+    "agent",
+    "get_default_session_service",
+    "get_default_runner",
+]
